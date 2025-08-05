@@ -1,14 +1,26 @@
+use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::error::Error;
-use rmcp::handler::server::tool::ToolRouter;
-use rmcp::model::*;
-use rmcp::{ServerHandler, tool, tool_handler, tool_router, serve_server};
-use rmcp::service::RequestContext;
 use std::fs::{OpenOptions, read_to_string};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
+
 use chrono::Utc;
-use std::borrow::Cow;
-use std::collections::VecDeque;
+use rmcp::handler::server::tool::ToolRouter;
+use rmcp::model::*;
+use rmcp::{ServerHandler, serve_server, tool, tool_handler, tool_router};
+use rmcp::service::RequestContext;
+
+// Constants to avoid string duplication
+const LIGHTBULB_ON_STATUS: &str = "The lightbulb is on";
+const LIGHTBULB_OFF_STATUS: &str = "The lightbulb is off";
+const LIGHTBULB_ALREADY_ON: &str = "The lightbulb is already on";
+const LIGHTBULB_ALREADY_OFF: &str = "The lightbulb is already off";
+const LIGHTBULB_TURNED_ON: &str = "Lightbulb turned on successfully";
+const LIGHTBULB_TURNED_OFF: &str = "Lightbulb turned off successfully";
+const LOG_FILE_NAME: &str = "lightbulb.log";
+const LOG_ACTION_ON: &str = "ON";
+const LOG_ACTION_OFF: &str = "OFF";
 
 // Trait for logging abstraction
 trait Logger {
@@ -71,27 +83,6 @@ impl Logger for InMemoryLogger {
     fn read_log(&self) -> Result<String, Box<dyn Error>> {
         Ok(self.entries.iter().map(|entry| format!("{}\n", entry)).collect())
     }
-}
-
-// Constants to avoid string duplication
-const LIGHTBULB_ON_STATUS: &str = "The lightbulb is on";
-const LIGHTBULB_OFF_STATUS: &str = "The lightbulb is off";
-const LIGHTBULB_ALREADY_ON: &str = "The lightbulb is already on";
-const LIGHTBULB_ALREADY_OFF: &str = "The lightbulb is already off";
-const LIGHTBULB_TURNED_ON: &str = "Lightbulb turned on successfully";
-const LIGHTBULB_TURNED_OFF: &str = "Lightbulb turned off successfully";
-const LOG_FILE_NAME: &str = "lightbulb.log";
-const LOG_ACTION_ON: &str = "ON";
-const LOG_ACTION_OFF: &str = "OFF";
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let logger = FileLogger::new(LOG_FILE_NAME.to_string());
-    let server = LightService::new_with_logger(Box::new(logger));
-
-    let transport = (tokio::io::stdin(), tokio::io::stdout());
-    serve_server(server, transport).await?.waiting().await?;
-    Ok(())
 }
 
 struct LightService {
@@ -303,6 +294,16 @@ impl ServerHandler for LightService {
             }),
         }
     }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let logger = FileLogger::new(LOG_FILE_NAME.to_string());
+    let server = LightService::new_with_logger(Box::new(logger));
+
+    let transport = (tokio::io::stdin(), tokio::io::stdout());
+    serve_server(server, transport).await?.waiting().await?;
+    Ok(())
 }
 
 #[cfg(test)]
