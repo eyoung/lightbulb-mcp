@@ -43,7 +43,6 @@ impl LightService {
             Ok("The lightbulb is already on".to_owned())
         } else {
             *state = true;
-            drop(state); // Release the lock before logging
             self.log_light_event("ON").map_err(|e| format!("Failed to log event: {}", e))?;
             Ok("Lightbulb turned on successfully".to_owned())
         }
@@ -56,7 +55,6 @@ impl LightService {
             Ok("The lightbulb is already off".to_owned())
         } else {
             *state = false;
-            drop(state); // Release the lock before logging
             self.log_light_event("OFF").map_err(|e| format!("Failed to log event: {}", e))?;
             Ok("Lightbulb turned off successfully".to_owned())
         }
