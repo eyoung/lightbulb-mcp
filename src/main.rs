@@ -70,7 +70,6 @@ impl LightService {
             .open("lightbulb.log")?;
         
         file.write_all(log_entry.as_bytes())?;
-        file.flush()?;
         Ok(())
     }
 
