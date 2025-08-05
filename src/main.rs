@@ -1,15 +1,16 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::error::Error;
-use std::fs::{OpenOptions, read_to_string};
-use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use chrono::Utc;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::*;
 use rmcp::{ServerHandler, serve_server, tool, tool_handler, tool_router};
 use rmcp::service::RequestContext;
+use tokio::sync::Mutex;
+use tokio::fs::{OpenOptions, read_to_string};
+use tokio::io::AsyncWriteExt;
 
 // Constants to avoid string duplication
 const LIGHTBULB_ON_STATUS: &str = "The lightbulb is on";
@@ -23,9 +24,10 @@ const LOG_ACTION_ON: &str = "ON";
 const LOG_ACTION_OFF: &str = "OFF";
 
 // Trait for logging abstraction
+#[async_trait::async_trait]
 trait Logger {
-    fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error>>;
-    fn read_log(&self) -> Result<String, Box<dyn Error>>;
+    async fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error + Send>>;
+    async fn read_log(&self) -> Result<String, Box<dyn Error + Send>>;
 }
 
 // File-based logger for production
@@ -39,22 +41,27 @@ impl FileLogger {
     }
 }
 
+#[async_trait::async_trait]
 impl Logger for FileLogger {
-    fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error>> {
+    async fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error + Send>> {
         let timestamp = Utc::now();
         let log_entry = format!("[{}] Lightbulb turned {}\n", timestamp.to_rfc3339(), action);
         
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.file_path)?;
+            .open(&self.file_path)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
         
-        file.write_all(log_entry.as_bytes())?;
+        file.write_all(log_entry.as_bytes()).await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
         Ok(())
     }
     
-    fn read_log(&self) -> Result<String, Box<dyn Error>> {
-        read_to_string(&self.file_path).map_err(|e| e.into())
+    async fn read_log(&self) -> Result<String, Box<dyn Error + Send>> {
+        read_to_string(&self.file_path).await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)
     }
 }
 
@@ -72,15 +79,16 @@ impl InMemoryLogger {
     }
 }
 
+#[async_trait::async_trait]
 impl Logger for InMemoryLogger {
-    fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error>> {
+    async fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error + Send>> {
         let timestamp = Utc::now();
         let log_entry = format!("[{}] Lightbulb turned {}", timestamp.to_rfc3339(), action);
         self.entries.push_back(log_entry);
         Ok(())
     }
     
-    fn read_log(&self) -> Result<String, Box<dyn Error>> {
+    async fn read_log(&self) -> Result<String, Box<dyn Error + Send>> {
         Ok(self.entries.iter().map(|entry| format!("{}\n", entry)).collect())
     }
 }
@@ -95,7 +103,7 @@ struct LightService {
 impl LightService {
     #[tool(description = "Get the current status of the lightbulb")]
     async fn get_lightbulb_status(&self) -> String {
-        let state = self.light_state.lock().unwrap();
+        let state = self.light_state.lock().await;
         if *state {
             LIGHTBULB_ON_STATUS.to_owned()
         } else {
@@ -105,43 +113,43 @@ impl LightService {
 
     #[tool(description = "Turn on the lightbulb")]
     async fn turn_on_lightbulb(&self) -> Result<String, String> {
-        self.change_lightbulb_state(true, LIGHTBULB_ALREADY_ON, LIGHTBULB_TURNED_ON, LOG_ACTION_ON)
+        self.change_lightbulb_state(true, LIGHTBULB_ALREADY_ON, LIGHTBULB_TURNED_ON, LOG_ACTION_ON).await
     }
 
     #[tool(description = "Turn off the lightbulb")]
     async fn turn_off_lightbulb(&self) -> Result<String, String> {
-        self.change_lightbulb_state(false, LIGHTBULB_ALREADY_OFF, LIGHTBULB_TURNED_OFF, LOG_ACTION_OFF)
+        self.change_lightbulb_state(false, LIGHTBULB_ALREADY_OFF, LIGHTBULB_TURNED_OFF, LOG_ACTION_OFF).await
     }
 
-    fn change_lightbulb_state(
+    async fn change_lightbulb_state(
         &self,
         target_state: bool,
         already_message: &str,
         success_message: &str,
         log_action: &str,
     ) -> Result<String, String> {
-        let mut state = self.light_state.lock().unwrap();
+        let mut state = self.light_state.lock().await;
         if *state == target_state {
             Ok(already_message.to_owned())
         } else {
             *state = target_state;
-            self.log_light_event(log_action).map_err(|e| format!("Failed to log event: {}", e))?;
+            self.log_light_event(log_action).await.map_err(|e| format!("Failed to log event: {}", e))?;
             Ok(success_message.to_owned())
         }
     }
 
-    fn log_light_event(&self, action: &str) -> Result<(), Box<dyn Error>> {
-        let mut logger = self.logger.lock().unwrap();
-        logger.log_event(action)
+    async fn log_light_event(&self, action: &str) -> Result<(), Box<dyn Error + Send>> {
+        let mut logger = self.logger.lock().await;
+        logger.log_event(action).await
     }
 
-    fn read_log_content(&self) -> Result<String, Box<dyn Error>> {
-        let logger = self.logger.lock().unwrap();
-        logger.read_log()
+    async fn read_log_content(&self) -> Result<String, Box<dyn Error + Send>> {
+        let logger = self.logger.lock().await;
+        logger.read_log().await
     }
 
-    fn generate_usage_summary(&self) -> String {
-        match self.read_log_content() {
+    async fn generate_usage_summary(&self) -> String {
+        match self.read_log_content().await {
             Ok(log_content) => {
                 let lines: Vec<&str> = log_content.lines().filter(|line| !line.trim().is_empty()).collect();
                 
@@ -153,7 +161,7 @@ impl LightService {
                 let on_actions = lines.iter().filter(|line| line.contains("turned ON")).count();
                 let off_actions = lines.iter().filter(|line| line.contains("turned OFF")).count();
                 
-                let current_state = self.light_state.lock().unwrap();
+                let current_state = self.light_state.lock().await;
                 let current_status = if *current_state { "ON" } else { "OFF" };
                 
                 // Get first and last action timestamps
@@ -265,7 +273,7 @@ impl ServerHandler for LightService {
     ) -> Result<ReadResourceResult, ErrorData> {
         match request.uri.as_str() {
             "lightbulb://log" => {
-                let content = match self.read_log_content() {
+                let content = match self.read_log_content().await {
                     Ok(log_content) => {
                         if log_content.trim().is_empty() {
                             "No lightbulb activity recorded yet.".to_string()
@@ -281,7 +289,7 @@ impl ServerHandler for LightService {
                 })
             },
             "lightbulb://summary" => {
-                let summary = self.generate_usage_summary();
+                let summary = self.generate_usage_summary().await;
                 
                 Ok(ReadResourceResult {
                     contents: vec![ResourceContents::text(summary, &request.uri)],
@@ -372,7 +380,7 @@ mod tests {
         let _ = service.turn_off_lightbulb().await;
         
         // Check that the log contains both actions
-        let log_content = service.read_log_content().unwrap();
+        let log_content = service.read_log_content().await.expect("Failed to read log content");
         assert!(log_content.contains("turned ON"));
         assert!(log_content.contains("turned OFF"));
     }
