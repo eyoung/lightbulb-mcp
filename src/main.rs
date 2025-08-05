@@ -9,6 +9,17 @@ use std::sync::{Arc, Mutex};
 use chrono::Utc;
 use std::borrow::Cow;
 
+// Constants to avoid string duplication
+const LIGHTBULB_ON_STATUS: &str = "The lightbulb is on";
+const LIGHTBULB_OFF_STATUS: &str = "The lightbulb is off";
+const LIGHTBULB_ALREADY_ON: &str = "The lightbulb is already on";
+const LIGHTBULB_ALREADY_OFF: &str = "The lightbulb is already off";
+const LIGHTBULB_TURNED_ON: &str = "Lightbulb turned on successfully";
+const LIGHTBULB_TURNED_OFF: &str = "Lightbulb turned off successfully";
+const LOG_FILE_NAME: &str = "lightbulb.log";
+const LOG_ACTION_ON: &str = "ON";
+const LOG_ACTION_OFF: &str = "OFF";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     
@@ -30,33 +41,36 @@ impl LightService {
     async fn get_lightbulb_status(&self) -> String {
         let state = self.light_state.lock().unwrap();
         if *state {
-            "The lightbulb is on".to_owned()
+            LIGHTBULB_ON_STATUS.to_owned()
         } else {
-            "The lightbulb is off".to_owned()
+            LIGHTBULB_OFF_STATUS.to_owned()
         }
     }
 
     #[tool(description = "Turn on the lightbulb")]
     async fn turn_on_lightbulb(&self) -> Result<String, String> {
-        let mut state = self.light_state.lock().unwrap();
-        if *state {
-            Ok("The lightbulb is already on".to_owned())
-        } else {
-            *state = true;
-            self.log_light_event("ON").map_err(|e| format!("Failed to log event: {}", e))?;
-            Ok("Lightbulb turned on successfully".to_owned())
-        }
+        self.change_lightbulb_state(true, LIGHTBULB_ALREADY_ON, LIGHTBULB_TURNED_ON, LOG_ACTION_ON)
     }
 
     #[tool(description = "Turn off the lightbulb")]
     async fn turn_off_lightbulb(&self) -> Result<String, String> {
+        self.change_lightbulb_state(false, LIGHTBULB_ALREADY_OFF, LIGHTBULB_TURNED_OFF, LOG_ACTION_OFF)
+    }
+
+    fn change_lightbulb_state(
+        &self,
+        target_state: bool,
+        already_message: &str,
+        success_message: &str,
+        log_action: &str,
+    ) -> Result<String, String> {
         let mut state = self.light_state.lock().unwrap();
-        if !*state {
-            Ok("The lightbulb is already off".to_owned())
+        if *state == target_state {
+            Ok(already_message.to_owned())
         } else {
-            *state = false;
-            self.log_light_event("OFF").map_err(|e| format!("Failed to log event: {}", e))?;
-            Ok("Lightbulb turned off successfully".to_owned())
+            *state = target_state;
+            self.log_light_event(log_action).map_err(|e| format!("Failed to log event: {}", e))?;
+            Ok(success_message.to_owned())
         }
     }
 
@@ -67,14 +81,18 @@ impl LightService {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("lightbulb.log")?;
+            .open(LOG_FILE_NAME)?;
         
         file.write_all(log_entry.as_bytes())?;
         Ok(())
     }
 
+    fn read_log_content(&self) -> Result<String, Box<dyn Error>> {
+        read_to_string(LOG_FILE_NAME).map_err(|e| e.into())
+    }
+
     fn generate_usage_summary(&self) -> String {
-        match read_to_string("lightbulb.log") {
+        match self.read_log_content() {
             Ok(log_content) => {
                 let lines: Vec<&str> = log_content.lines().filter(|line| !line.trim().is_empty()).collect();
                 
@@ -185,7 +203,7 @@ impl ServerHandler for LightService {
     ) -> Result<ReadResourceResult, ErrorData> {
         match request.uri.as_str() {
             "lightbulb://log" => {
-                let content = match read_to_string("lightbulb.log") {
+                let content = match self.read_log_content() {
                     Ok(log_content) => {
                         if log_content.trim().is_empty() {
                             "No lightbulb activity recorded yet.".to_string()
@@ -213,5 +231,61 @@ impl ServerHandler for LightService {
                 data: None,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_initial_lightbulb_state() {
+        let service = LightService::new();
+        let status = service.get_lightbulb_status().await;
+        assert_eq!(status, "The lightbulb is off");
+    }
+
+    #[tokio::test]
+    async fn test_turn_on_lightbulb() {
+        let service = LightService::new();
+        let result = service.turn_on_lightbulb().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Lightbulb turned on successfully");
+
+        let status = service.get_lightbulb_status().await;
+        assert_eq!(status, "The lightbulb is on");
+    }
+
+    #[tokio::test]
+    async fn test_turn_off_lightbulb() {
+        let service = LightService::new();
+        // First turn it on
+        let _ = service.turn_on_lightbulb().await;
+
+        let result = service.turn_off_lightbulb().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Lightbulb turned off successfully");
+
+        let status = service.get_lightbulb_status().await;
+        assert_eq!(status, "The lightbulb is off");
+    }
+
+    #[tokio::test]
+    async fn test_turn_on_already_on() {
+        let service = LightService::new();
+        let _ = service.turn_on_lightbulb().await;
+
+        let result = service.turn_on_lightbulb().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "The lightbulb is already on");
+    }
+
+    #[tokio::test]
+    async fn test_turn_off_already_off() {
+        let service = LightService::new();
+
+        let result = service.turn_off_lightbulb().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "The lightbulb is already off");
     }
 }
