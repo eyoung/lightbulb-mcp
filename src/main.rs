@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::error::Error;
 use std::sync::Arc;
+
+use anyhow::{Context, Result};
 
 use chrono::Utc;
 use rmcp::handler::server::tool::ToolRouter;
@@ -26,8 +27,8 @@ const LOG_ACTION_OFF: &str = "OFF";
 // Trait for logging abstraction
 #[async_trait::async_trait]
 trait Logger {
-    async fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error + Send>>;
-    async fn read_log(&self) -> Result<String, Box<dyn Error + Send>>;
+    async fn log_event(&mut self, action: &str) -> anyhow::Result<()>;
+    async fn read_log(&self) -> anyhow::Result<String>;
 }
 
 // File-based logger for production
@@ -43,7 +44,7 @@ impl FileLogger {
 
 #[async_trait::async_trait]
 impl Logger for FileLogger {
-    async fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error + Send>> {
+    async fn log_event(&mut self, action: &str) -> anyhow::Result<()> {
         let timestamp = Utc::now();
         let log_entry = format!("[{}] Lightbulb turned {}\n", timestamp.to_rfc3339(), action);
         
@@ -52,16 +53,16 @@ impl Logger for FileLogger {
             .append(true)
             .open(&self.file_path)
             .await
-            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+            .with_context(|| format!("Failed to open log file: {}", self.file_path))?;
         
         file.write_all(log_entry.as_bytes()).await
-            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+            .with_context(|| "Failed to write to log file")?;
         Ok(())
     }
     
-    async fn read_log(&self) -> Result<String, Box<dyn Error + Send>> {
+    async fn read_log(&self) -> anyhow::Result<String> {
         read_to_string(&self.file_path).await
-            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)
+            .with_context(|| format!("Failed to read log file: {}", self.file_path))
     }
 }
 
@@ -81,14 +82,14 @@ impl InMemoryLogger {
 
 #[async_trait::async_trait]
 impl Logger for InMemoryLogger {
-    async fn log_event(&mut self, action: &str) -> Result<(), Box<dyn Error + Send>> {
+    async fn log_event(&mut self, action: &str) -> anyhow::Result<()> {
         let timestamp = Utc::now();
         let log_entry = format!("[{}] Lightbulb turned {}", timestamp.to_rfc3339(), action);
         self.entries.push_back(log_entry);
         Ok(())
     }
     
-    async fn read_log(&self) -> Result<String, Box<dyn Error + Send>> {
+    async fn read_log(&self) -> anyhow::Result<String> {
         Ok(self.entries.iter().map(|entry| format!("{}\n", entry)).collect())
     }
 }
@@ -138,12 +139,12 @@ impl LightService {
         }
     }
 
-    async fn log_light_event(&self, action: &str) -> Result<(), Box<dyn Error + Send>> {
+    async fn log_light_event(&self, action: &str) -> anyhow::Result<()> {
         let mut logger = self.logger.lock().await;
         logger.log_event(action).await
     }
 
-    async fn read_log_content(&self) -> Result<String, Box<dyn Error + Send>> {
+    async fn read_log_content(&self) -> anyhow::Result<String> {
         let logger = self.logger.lock().await;
         logger.read_log().await
     }
@@ -305,7 +306,7 @@ impl ServerHandler for LightService {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> anyhow::Result<()> {
     let logger = FileLogger::new(LOG_FILE_NAME.to_string());
     let server = LightService::new_with_logger(Box::new(logger));
 
